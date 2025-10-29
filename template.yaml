@@ -1,0 +1,36 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  AWS SAM Baseline — Node.js runtime with /ping endpoint.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+
+Globals:
+  Function:
+    Runtime: nodejs20.x
+    Timeout: 10
+    Environment:
+      Variables:
+        ENV: !Ref EnvironmentName
+
+Resources:
+  PingFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./
+      Handler: src/functions/ping/app.lambdaHandler
+      Events:
+        PingApi:
+          Type: Api
+          Properties:
+            Path: /ping
+            Method: get
+
+Outputs:
+  PingApiUrl:
+    Description: API Gateway endpoint URL for ping function
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/ping"

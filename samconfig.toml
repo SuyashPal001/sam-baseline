@@ -1,0 +1,13 @@
+# samconfig.toml
+version = 0.1
+
+[default.deploy.parameters]
+stack_name = "sam-baseline"
+capabilities = "CAPABILITY_IAM"
+parameter_overrides = "EnvironmentName=\"dev\""
+confirm_changeset = true
+resolve_s3 = true
+image_repositories = []
+
+[default.global.parameters]
+region = "ap-south-1"

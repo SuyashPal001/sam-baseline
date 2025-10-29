@@ -1,0 +1,9 @@
+{
+  "name": "ping-function",
+  "version": "1.0.0",
+  "description": "Ping Lambda function",
+  "main": "app.js",
+  "dependencies": {
+    "shared": "file:../../../shared"
+  }
+}

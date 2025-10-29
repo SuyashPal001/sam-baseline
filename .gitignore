@@ -1,0 +1,24 @@
+# SAM build artifacts
+.aws-sam/
+*.zip
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+.npm
+.yarn
+*.tgz
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# OS
+.DS_Store
+Thumbs.db
+EOF
+
