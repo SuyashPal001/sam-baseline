@@ -9,6 +9,8 @@ A clean, modular, and production-ready foundation for serverless applications us
 
 ## 📁 Project Structure
 aws-sam-baseline/
+
+
 ├── template.yaml # Root SAM infrastructure (infra only)
 ├── samconfig.toml # Environment-specific deployment config
 ├── README.md # This file
