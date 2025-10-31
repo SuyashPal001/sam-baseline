@@ -1,0 +1,12 @@
+version = 0.1
+
+[prod.deploy.paramters]
+
+stack_name = "myapp-prod"
+s3_bucket = "myapp-prod-artificats-12345"
+s3_prefix = "myapp-prod"
+region = "ap-south-1"
+parameter_overrides = "EnvironmentName=Prod"
+capabilities = "CAPABLITY_IAM CAPABILITY_NAMED_IAM"
+confirm_changeset = "true"
+

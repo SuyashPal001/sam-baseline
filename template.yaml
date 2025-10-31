@@ -1,13 +1,33 @@
-AWSTemplateFormatVersion: '2010-09-09'
+AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: >
   AWS SAM Baseline — Node.js runtime with /ping endpoint.
 
 Parameters:
+  ProjectName: 
+    Type: String
+    Default: myapp
+    Description: Base name for all resources
+
+
+
   EnvironmentName:
     Type: String
     Default: dev
-    AllowedValues: [dev, staging, prod]
+    AllowedValues: 
+      - dev
+      - staging
+      - prod
+    Description: Deployement environment (dev,staging,prod)
+
+Mappings:
+  EnvConfig:
+    dev:
+      LogLevel: INFO
+    staging:
+      LogLevel: INFO
+    prod:
+      LogLevel: WARN
 
 Globals:
   Function:
@@ -18,19 +38,53 @@ Globals:
         ENV: !Ref EnvironmentName
 
 Resources:
+  MyAppPingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-PingRole-${EnvironmentName}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies: 
+        - PolicyName: !Sub "${ProjectName}--PingPolicy-${EnvironmentName}"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
   PingFunction:
     Type: AWS::Serverless::Function
     Properties:
+      Role: !GetAtt MyAppPingRole.Arn
+      FunctionName: !Sub "${ProjectName}-ping-${EnvironmentName}"
       CodeUri: ./
       Handler: src/functions/ping/app.lambdaHandler
+      Runtime: nodejs20.x
+      Timeout: 10
+      Environment:
+        Variables:
+          ENV: !Ref EnvironmentName
+          LOG_LEVEL: !FindInMap [EnvConfig, !Ref EnvironmentName, LogLevel]
       Events:
         PingApi:
           Type: Api
           Properties:
             Path: /ping
-            Method: get
+            Method: get 
+  
 
 Outputs:
+  PingFunctionName:
+    Description: "Lambda function name"
+    Value: !Ref PingFunction
   PingApiUrl:
-    Description: API Gateway endpoint URL for ping function
+    Description: " API Gateway endpoint URL for ping function"
     Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/ping"

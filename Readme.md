@@ -1,32 +1,80 @@
 # AWS SAM Baseline Project
 
-A clean, modular, and production-ready foundation for serverless applications using **AWS SAM** and **Node.js**.
+A clean, modular, and secure foundation for serverless applications using **AWS SAM** and **Node.js**, with **multi-environment support** and **least-privilege IAM roles**.
 
-> ✅ Built per user story:  
-> _"Establish AWS SAM Project Baseline with Clean Modular Structure"_
+> ✅ Built per user stories:  
+> - _"Establish Multi-Environment Strategy for AWS SAM Project"_  
+> - _"Configure Dedicated IAM Roles for Each Lambda Function"_
 
 ---
 
 ## 📁 Project Structure
+ 
+profile
+Qwen3-Max
+1:53 pm
+Absolutely! Here is your complete, production-ready README.md — updated to include both your multi-environment strategy and dedicated IAM roles.
+
+Save this as README.md in your project root:
+
+markdown
+
+
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+⌄
+⌄
+# AWS SAM Baseline Project
+
+A clean, modular, and secure foundation for serverless applications using **AWS SAM** and **Node.js**, with **multi-environment support** and **least-privilege IAM roles**.
+
+> ✅ Built per user stories:  
+> - _"Establish Multi-Environment Strategy for AWS SAM Project"_  
+> - _"Configure Dedicated IAM Roles for Each Lambda Function"_
+
+---
+
+## 📁 Project Structure
+
 aws-sam-baseline/
+<<<<<<< HEAD
 
 
 ├── template.yaml # Root SAM infrastructure (infra only)
 ├── samconfig.toml # Environment-specific deployment config
 ├── README.md # This file
+=======
+├── template.yaml # Infrastructure (SAM template)
+├── samconfig.dev.toml # Dev environment config
+├── samconfig.staging.toml # Staging config
+├── samconfig.prod.toml # Production config
+├── README.md
+>>>>>>> b8dd450 (docs: add complete multi-env and IAM documentation)
 ├── src/
-│ ├── functions/ # Lambda function handlers (business logic)
+│ ├── functions/ # Lambda handlers (business logic)
 │ │ └── ping/ # Example: GET /ping
 │ └── shared/ # Shared utilities (e.g., response formatters)
-├── events/ # Sample event payloads for local testing
-└── tests/ # Local test scripts (e.g., test-ping-local.sh)
+├── events/ # Sample event payloads
+└── tests/ # Local test scripts
+
+
 
 
 ### Key Principles
 - **Separation of concerns**: Infrastructure (`template.yaml`) ≠ business logic (`src/`)
-- **Modular**: Ready for nested stacks (e.g., `infra/api.yaml`, `infra/db.yaml`)
+- **Environment isolation**: `dev`, `staging`, `prod` are fully independent
+- **Security by default**: Each Lambda has its own least-privilege IAM role
 - **Portable**: Works on Linux, macOS, Windows (PowerShell/WSL)
-- **CI/CD-ready**: Fully scriptable with `sam build` and `sam deploy`
 
 ---
 
@@ -53,102 +101,55 @@ curl http://127.0.0.1:3000/ping
 # Test with event payload
 sam local invoke PingFunction -e events/ping-event.json
 
-# Run local test script
-./tests/test-ping-local.sh
+
+# Deploy dev
+sam deploy --config-file samconfig.dev.toml
+
+# Deploy staging
+sam deploy --config-file samconfig.staging.toml
+
+# Deploy prod
+sam deploy --config-file samconfig.prod.toml
 
 
-☁️ Deployment
-First-Time Deploy (creates S3 bucket)
-bash
+# Check role for ping function
+ROLE_ARN=$(aws lambda get-function-configuration --function-name myapp-ping-dev --query 'Role' --output text)
+echo "Role: $ROLE_ARN"
+
+# List functions using this role (should be only one)
+aws lambda list-functions --query "Functions[?Role=='$ROLE_ARN'].FunctionName"
+
+# Inspect policy
+ROLE_NAME=$(basename "$ROLE_ARN")
+aws iam get-role-policy --role-name "$ROLE_NAME" --policy-name "$(aws iam list-role-policies --role-name "$ROLE_NAME" --query 'PolicyNames[0]' --output text)"
 
 
-1
-sam deploy --guided
-Follow prompts to set stack name, region, and save config. 
+#how to add function 
 
-Subsequent Deploys
-bash
-
-
-1
-sam deploy
-Deploy to Other Environments
-bash
-
-
-1
-2
-# Example: staging
-sam deploy --parameter-overrides EnvironmentName=staging
-Output
-After deploy, SAM outputs:
-
-
-
-1
-PingApiUrl = https://<id>.execute-api.<region>.amazonaws.com/Prod/ping/
-Test it:
-
-bash
-
-
-1
-curl https://<id>.execute-api.<region>.amazonaws.com/Prod/ping/
-🧩 Extensibility
-Add New Functions
-Create src/functions/<name>/app.js
-Add to template.yaml:
-yaml
-
-
-1
-2
-3
-4
-5
-6
-7
-8
-9
-10
-11
-⌄
-⌄
-⌄
-⌄
-⌄
 NewFunction:
   Type: AWS::Serverless::Function
   Properties:
+    Role: !GetAtt MyAppNewFunctionRole.Arn
     CodeUri: ./
     Handler: src/functions/<name>/app.lambdaHandler
-    Events:
-      Api:
-        Type: Api
-        Properties:
-          Path: /<path>
-          Method: get
-Use Nested Stacks (for large apps)
-Create infra/api.yaml, then reference in root template.yaml:
+    # ... events, etc.
 
-yaml
+MyAppNewFunctionRole:
+  Type: AWS::IAM::Role
+  Properties:
+    AssumeRolePolicyDocument: { ... }
+    Policies:
+      - PolicyName: !Sub "${ProjectName}-NewFunctionPolicy-${EnvironmentName}"
+        PolicyDocument: { ... }  # Only necessary permissions
 
 
-1
-2
-3
-4
-5
-⌄
-⌄
-⌄
+
+#use of nested stacks
+
 Resources:
   ApiStack:
     Type: AWS::Serverless::Application
     Properties:
       Location: infra/api.yaml
-Add Real Dependencies (e.g., axios)
-Create src/functions/ping/package.json
-Run npm install axios
-SAM will bundle node_modules automatically
+
 

@@ -1,0 +1,10 @@
+version =0.1
+
+[default.deploy.parameters]
+stack_name = "myapp-staging"
+s3_bucket = "myapp-staging-artifacts-12345"
+s3_prefix = "myapp-staging"
+region = "ap-south-1"
+capabilities = "CAPABILITY_IAM CAPABILITY_NAMED_IAM"
+parameter_overrides = "EnvironmentName=staging"
+confirm_changeset = "true"
