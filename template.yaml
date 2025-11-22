@@ -1,47 +1,153 @@
-AWSTemplateFormatVersion: "2010-09-09"
+AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: >
-  AWS SAM Baseline — Node.js runtime with /ping endpoint.
+  AWS SAM Baseline – Node.js runtime with Lambda Layers architecture
 
 Parameters:
-  ProjectName: 
+  ProjectName:
     Type: String
     Default: myapp
     Description: Base name for all resources
 
-
-
   EnvironmentName:
     Type: String
     Default: dev
-    AllowedValues: 
+    AllowedValues:
       - dev
       - staging
       - prod
-    Description: Deployement environment (dev,staging,prod)
+    Description: Deployment environment (dev, staging, prod)
+
+  CorsOrigin: 
+    Type: String
+    Default: "*"
+    Description: CORS origin for API Gateway
+ 
+  #Throttling configuration per environment
+
+  BurstLimit: 
+    Type: Number
+    Default: 1000
+    Description: API Gateway burst limit (requests per second)
+    MinValue: 1
+    MaxValue: 10000
+  RateLimit:
+    Type: Number
+    Default: 500
+    Description: API Gateway rate limit (requests per second)
+    MinValue: 1
+    MaxValue: 10000
+
+  #Provision concurrency configuration
+  ProvisionedConcurrency:
+    Type: Number
+    Default: 0
+    Description: Number of provisoned concurrency instances for the live aliases (0 = disabled)
+    MinValue: 0
+    MaxValue: 1000
 
 Mappings:
   EnvConfig:
     dev:
       LogLevel: INFO
+      SenderEmail: noreply@dev.fitnearn.com
+      BurstLimit: 1000
+      RateLimit: 500
     staging:
       LogLevel: INFO
+      BurstLimit: 1000
+      RateLimit: 500
     prod:
       LogLevel: WARN
+      SenderEmail: noreply@fitnearn.com
+      BurstLimit: 250
+      RateLimit: 100
 
+  
 Globals:
   Function:
     Runtime: nodejs20.x
     Timeout: 10
+    Architectures:
+      - x86_64
     Environment:
       Variables:
         ENV: !Ref EnvironmentName
+        NODE_OPTIONS: "--enable-source-maps"
+    # Apply both layers to ALL functions globally
+    Layers:
+      - !Ref CommonDependenciesLayer
+      - !Ref SharedUtilsLayer
 
+#*************
 Resources:
-  MyAppPingRole:
+#************
+  # ===================================
+  # Lambda Layer: Common npm packages
+  # ===================================
+  CommonDependenciesLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: !Sub "${ProjectName}-common-deps-${EnvironmentName}"
+      Description: Common npm dependencies (updated)
+      ContentUri: layers/common/
+      CompatibleRuntimes:
+        - nodejs20.x
+      RetentionPolicy: Retain
+    Metadata:
+      BuildMethod: makefile
+      BuildArchitecture: x86_64
+
+  # ===================================
+  # Lambda Layer: Shared TypeScript utilities
+  # ===================================
+  SharedUtilsLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: !Sub "${ProjectName}-shared-utils-${EnvironmentName}"
+      Description: Compiled shared TypeScript utilities (updated)
+      ContentUri: dist/shared/nodejs/
+      CompatibleRuntimes:
+        - nodejs20.x
+      RetentionPolicy: Retain
+    Metadata:
+      BuildMethod: nodejs20.x
+      BuildArchitecture: x86_64
+  
+  # ===================================
+  # S3 Bucket for application data (uploads, exports, reports)
+  # ===================================
+  ApplicationBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ProjectName}-assets-${EnvironmentName}-${AWS::AccountId}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteIncompleteMultipartUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+
+
+
+  # ===================================
+  # IAM Role for Lambda Functions
+  # ===================================
+  MyAppLambdaRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub "${ProjectName}-PingRole-${EnvironmentName}"
+      RoleName: !Sub "${ProjectName}-LambdaRole-${EnvironmentName}"
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -49,42 +155,433 @@ Resources:
             Principal:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
-      Policies: 
-        - PolicyName: !Sub "${ProjectName}--PingPolicy-${EnvironmentName}"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: !Sub "${ProjectName}-LambdaPolicy-${EnvironmentName}"
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
+              # CloudWatch Logs
               - Effect: Allow
                 Action:
                   - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: "*"
+              
+              # Secrets Manager - MongoDB URI
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:myapp/${EnvironmentName}/mongodb*"
+              
+              # Parameter Store - Cognito credentials
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                Resource:
+                  - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/myapp/${EnvironmentName}/auth/*"
+              
+              # Cognito - For health checks
+              - Effect: Allow
+                Action:
+                  - cognito-idp:DescribeUserPoolClient
+                  - cognito-idp:ListUserPools
+                Resource: !Sub "arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/*"
+              
+              # SES - Send emails
+              - Effect: Allow
+                Action:
+                  - ses:SendEmail
+                  - ses:SendRawEmail
+                Resource: "*"
+              
+              # SES - Email sending
+              - Effect: Allow
+                Action:
+                  - ses:SendEmail
+                  - ses:SendRawEmail
+                Resource: "*"
+
+              # s3 - Application bucket access
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource: "*"
+
+  # ===================================
+  # Lambda Functions 
+  # ===================================
   PingFunction:
     Type: AWS::Serverless::Function
     Properties:
-      Role: !GetAtt MyAppPingRole.Arn
+      Role: !GetAtt MyAppLambdaRole.Arn
       FunctionName: !Sub "${ProjectName}-ping-${EnvironmentName}"
-      CodeUri: ./
-      Handler: src/functions/ping/app.lambdaHandler
+      CodeUri: src/functions/ping/
+      Handler: index.handler
       Runtime: nodejs20.x
-      Timeout: 10
+      Timeout: 30
+      AutoPublishAlias: live
       Environment:
         Variables:
           ENV: !Ref EnvironmentName
           LOG_LEVEL: !FindInMap [EnvConfig, !Ref EnvironmentName, LogLevel]
+          
+          # MongoDB
+          MONGODB_SECRET_ID: !Sub "myapp/${EnvironmentName}/mongodb"
+          
+          # Cognito
+          COGNITO_CLIENT_ID_PATH: !Sub "/myapp/${EnvironmentName}/auth/clientId"
+          COGNITO_CLIENT_SECRET_PATH: !Sub "/myapp/${EnvironmentName}/auth/clientSecret"
+          COGNITO_USER_POOL_ID: !Ref MyAppUserPool
+          
+          # S3 Buckets 
+          S3_APPLICATION_BUCKET: !Ref ApplicationBucket
+
       Events:
         PingApi:
           Type: Api
           Properties:
             Path: /ping
-            Method: get 
+            Method: get
+            RestApiId: !Ref ServerlessRestApi
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: "es2020"
+        Sourcemap: true
+        EntryPoints: 
+          - index.ts
+        External:
+          - shared
   
+  #--------------------
+  WelcomeEmailFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt MyAppLambdaRole.Arn
+      FunctionName: !Sub "${ProjectName}-welcome-email-${EnvironmentName}"
+      CodeUri: src/functions/email/
+      Handler: index.handler
+      Runtime: nodejs20.x
+      Timeout: 30
+      AutoPublishAlias: live
+      Environment:
+        Variables:
+          ENV: !Ref EnvironmentName
+          LOG_LEVEL: !FindInMap [EnvConfig, !Ref EnvironmentName, LogLevel]
+          FROM_EMAIL: !FindInMap [EnvConfig, !Ref EnvironmentName, SenderEmail]
+          # S3 Buckets 
+          
+          S3_APPLICATION_BUCKET: !Ref ApplicationBucket
+
+      Events:
+        WelcomeEmailApi:
+          Type: Api
+          Properties:
+            Path: /welcome-email
+            Method: POST
+            RestApiId: !Ref ServerlessRestApi
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: false
+        Target: es2020
+        Sourcemap: true
+        EntryPoints:
+          - index.ts
+        External:
+          - shared
+  
+  #---------------------------
+  AuthFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt MyAppLambdaRole.Arn
+      FunctionName: !Sub "${ProjectName}-auth-${EnvironmentName}"
+      CodeUri: src/functions/auth/
+      Handler: index.handler
+      Runtime: nodejs20.x
+      Timeout: 30
+      AutoPublishAlias: live
+      Environment:
+        Variables:
+          ENV: !Ref EnvironmentName
+          LOG_LEVEL: !FindInMap [EnvConfig, !Ref EnvironmentName, LogLevel]
+          
+          # MongoDB
+          MONGODB_SECRET_ID: !Sub "myapp/${EnvironmentName}/mongodb"
+          
+          # Cognito
+          COGNITO_CLIENT_ID_PATH: !Sub "/myapp/${EnvironmentName}/auth/clientId"
+          COGNITO_CLIENT_SECRET_PATH: !Sub "/myapp/${EnvironmentName}/auth/clientSecret"
+          COGNITO_USER_POOL_ID: !Ref MyAppUserPool
+          
+          # SES
+          FROM_EMAIL: !FindInMap [EnvConfig, !Ref EnvironmentName, SenderEmail]
+          # S3 Buckets
+          
+          S3_APPLICATION_BUCKET: !Ref ApplicationBucket
+      Events:
+        RegisterApi:
+          Type: Api
+          Properties:
+            Path: /register
+            Method: POST
+            RestApiId: !Ref ServerlessRestApi
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: false
+        Target: es2020
+        Sourcemap: true
+        EntryPoints:
+          - index.ts
+        External:
+          - shared
+
+  # ===================================
+  # Cognito User Pool
+  # ===================================
+  MyAppUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub "${ProjectName}-users-${EnvironmentName}"
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+          RequireUppercase: false
+      AutoVerifiedAttributes:
+        - email
+      AliasAttributes: 
+        - email
+      MfaConfiguration: "OFF"
+      Schema: 
+        - Name: email
+          AttributeDataType: String
+          Mutable: true
+          Required: true
+        - Name: given_name
+          AttributeDataType: String
+          Mutable: true
+          Required: true
+        - Name: family_name
+          AttributeDataType: String
+          Mutable: true
+          Required: true
+
+  # ===================================
+  # Cognito User Pool Client
+  # ===================================
+  MyAppUserPoolClient: 
+    Type: AWS::Cognito::UserPoolClient
+    Properties: 
+      ClientName: !Sub "${ProjectName}-app-${EnvironmentName}"
+      UserPoolId: !Ref MyAppUserPool
+      GenerateSecret: true
+      ExplicitAuthFlows:
+        - ALLOW_ADMIN_USER_PASSWORD_AUTH
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      PreventUserExistenceErrors: ENABLED
+      AccessTokenValidity: 60
+      IdTokenValidity: 60
+      RefreshTokenValidity: 30
+      TokenValidityUnits:
+        AccessToken: minutes
+        IdToken: minutes
+        RefreshToken: days
+  # ===================================
+  # API Gateway Configuration
+  # ===================================
+  MyCognitoAuthorizer:
+    Type: AWS::ApiGateway::Authorizer
+    Properties:
+      Name: !Sub "${ProjectName}-CognitoAuth-${EnvironmentName}"
+      RestApiId: !Ref ServerlessRestApi
+      Type: COGNITO_USER_POOLS
+      ProviderARNs:
+        - !GetAtt MyAppUserPool.Arn
+      IdentitySource: method.request.header.Authorization
+
+  ApiGatewayLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties: 
+      LogGroupName: !Sub "/aws/api-gateway/${ProjectName}-${EnvironmentName}-access-logs"
+      RetentionInDays: 14
+
+  ServerlessRestApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: !Ref EnvironmentName
+      Cors: 
+        AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'" 
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,X-Amz-User-Agent'"
+        AllowOrigin: !Ref CorsOrigin
+      TracingEnabled: true
+      AccessLogSetting:
+        DestinationArn: !GetAtt ApiGatewayLogGroup.Arn
+        Format: '{ "requestId":"$context.requestId", "ip": "$context.identity.sourceIp", "caller":"$context.identity.caller", "user":"$context.identity.user","requestTime":"$context.requestTime", "httpMethod":"$context.httpMethod","resourcePath":"$context.resourcePath", "status":"$context.status","protocol":"$context.protocol", "responseLength":"$context.responseLength" }'
+      MethodSettings:
+        - ResourcePath: "/*"
+          HttpMethod: "*"
+          LoggingLevel: INFO
+          MetricsEnabled: true
+          ThrottlingBurstLimit: !FindInMap [EnvConfig, !Ref EnvironmentName, BurstLimit]
+          ThrottlingRateLimit: !FindInMap [EnvConfig, !Ref EnvironmentName, RateLimit]
+      DefinitionBody:
+        openapi: "3.0.1"
+        info: 
+          title: !Sub "${ProjectName}-api-${EnvironmentName}"
+          version: "1.0"
+        components: 
+          schemas: 
+            RegisterRequest:
+              type: object
+              required: 
+                - email
+                - password
+                - given_name
+                - family_name
+              properties: 
+                email: 
+                  type: string
+                  format: email
+                password: 
+                  type: string
+                  minLength: 8
+                given_name:
+                  type: string
+                family_name:
+                  type: string
+     
+            WelcomeEmailRequest:  
+              type: object
+              required: 
+                - to
+                - name
+              properties:
+                to:
+                  type: string
+                  format: email
+                name: 
+                  type: string
+        paths:
+          /ping:
+            get: 
+              x-amazon-apigateway-integration: 
+                httpMethod: POST
+                type: aws_proxy
+                uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${PingFunction.Arn}/invocations"
+              responses: 
+                '200':
+                  description: Success
+              security: [] 
+          /register:
+            post:
+              requestBody:
+                required: true
+                content: 
+                  application/json:
+                    schema:
+                      $ref: "#/components/schemas/RegisterRequest"
+              x-amazon-apigateway-integration:
+                httpMethod: POST
+                type: aws_proxy
+                uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AuthFunction.Arn}/invocations"
+              responses:
+                '200':
+                  description: Success
+              security: []
+
+          /welcome-email: 
+            post:
+              requestBody:
+                required: true
+                content: 
+                  application/json:
+                    schema:
+                      $ref: "#/components/schemas/WelcomeEmailRequest"
+              x-amazon-apigateway-integration:
+                httpMethod: POST
+                type: aws_proxy
+                uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WelcomeEmailFunction.Arn}/invocations"
+              responses:
+                '200':
+                  description: Success
+              security: []
+        x-amazon-apigateway-gateway-responses:
+          DEFAULT_4XX:
+            statusCode: 400
+            responseTemplates:
+              application/json: '{"error": "Invalid request", "message": "$context.error.message"}'
+          DEFAULT_5XX:
+            statusCode: 500
+            responseTemplates:
+              application/json: '{"error": "Internal server error", "message": "$context.error.message"}'
+
 
 Outputs:
+  # Layer ARNs
+  CommonDependenciesLayerArn:
+    Description: "ARN of Common Dependencies Layer"
+    Value: !Ref CommonDependenciesLayer
+    Export:
+      Name: !Sub "${AWS::StackName}-CommonDepsLayerArn"
+
+  SharedUtilsLayerArn:
+    Description: "ARN of Shared Utils Layer"
+    Value: !Ref SharedUtilsLayer
+    Export:
+      Name: !Sub "${AWS::StackName}-SharedUtilsLayerArn"
+
+  # S3 Bucket Outputs
+  ArtifactsBucketName:
+    Description: "S3 bucket for application data"
+    Value: !Ref ApplicationBucket
+    Export:
+      Name: !Sub "${AWS::StackName}-ApplicationBucketName"
+
+  ApplicationBucketArn:
+    Description: "S3 bucket ARN for application data"
+    Value: !GetAtt ApplicationBucket.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-ApplicationBucketArn"
+
+
+  # Function outputs
   PingFunctionName:
-    Description: "Lambda function name"
+    Description: "Ping Lambda function name"
     Value: !Ref PingFunction
+
   PingApiUrl:
-    Description: " API Gateway endpoint URL for ping function"
-    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/ping"
+    Description: "API Gateway endpoint URL for ping function"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/${EnvironmentName}/ping"
+    Export:
+      Name: !Sub "${AWS::StackName}-PingUrl"
+
+  # Cognito outputs
+  UserPoolId: 
+    Description: "Cognito user pool id"
+    Value: !Ref MyAppUserPool
+    Export:
+      Name: !Sub "${AWS::StackName}-UserPoolId"
+
+  UserPoolClientId:
+    Description: "Cognito App Client ID"
+    Value: !Ref MyAppUserPoolClient
+    Export:
+      Name: !Sub "${AWS::StackName}-UserPoolClientId"
+
+  UserPoolClientSecret:
+    Description: "Cognito App Client Secret"
+    Value: !GetAtt MyAppUserPoolClient.ClientSecret
+    Export:
+      Name: !Sub "${AWS::StackName}-UserPoolClientSecret"
