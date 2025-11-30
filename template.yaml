@@ -20,7 +20,7 @@ Parameters:
 
   CorsOrigin: 
     Type: String
-    Default: "*"
+    Default: '*'
     Description: CORS origin for API Gateway
  
   #Throttling configuration per environment
@@ -55,6 +55,7 @@ Mappings:
       RateLimit: 500
     staging:
       LogLevel: INFO
+      SenderEmail: noreply@staging.fitnearn.com
       BurstLimit: 1000
       RateLimit: 500
     prod:
@@ -196,13 +197,6 @@ Resources:
                   - ses:SendEmail
                   - ses:SendRawEmail
                 Resource: "*"
-              
-              # SES - Email sending
-              - Effect: Allow
-                Action:
-                  - ses:SendEmail
-                  - ses:SendRawEmail
-                Resource: "*"
 
               # s3 - Application bucket access
               - Effect: Allow
@@ -212,6 +206,38 @@ Resources:
                   - s3:DeleteObject
                 Resource: "*"
 
+              #SNS - Publish to app events topic
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Ref AppEventsTopic
+
+              # SQS - Processing Queue
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:GetQueueAttributes
+                  - sqs:DeleteMessage
+                  - sqs:ChangeMessageVisibility
+                Resource:
+                  - !GetAtt ProcessingQueue.Arn
+                  - !GetAtt ProcessingDLQ.Arn
+
+              # SQS - Workflow FIFO Queue
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:GetQueueAttributes
+                  - sqs:DeleteMessage
+                  - sqs:ChangeMessageVisibility
+                Resource:
+                  - !GetAtt WorkflowQueue.Arn
+                  - !GetAtt WorkflowDLQ.Arn
+              # EventBridge - Publish to custom bus
+              - Effect: Allow
+                Action:
+                  - events:PutEvents
+                Resource: !GetAtt AppEventBus.Arn
   # ===================================
   # Lambda Functions 
   # ===================================
@@ -229,25 +255,21 @@ Resources:
         Variables:
           ENV: !Ref EnvironmentName
           LOG_LEVEL: !FindInMap [EnvConfig, !Ref EnvironmentName, LogLevel]
-          
           # MongoDB
           MONGODB_SECRET_ID: !Sub "myapp/${EnvironmentName}/mongodb"
-          
           # Cognito
           COGNITO_CLIENT_ID_PATH: !Sub "/myapp/${EnvironmentName}/auth/clientId"
           COGNITO_CLIENT_SECRET_PATH: !Sub "/myapp/${EnvironmentName}/auth/clientSecret"
           COGNITO_USER_POOL_ID: !Ref MyAppUserPool
-          
           # S3 Buckets 
           S3_APPLICATION_BUCKET: !Ref ApplicationBucket
-
       Events:
         PingApi:
           Type: Api
           Properties:
             Path: /ping
             Method: get
-            RestApiId: !Ref ServerlessRestApi
+            RestApiId: !Ref MyAppApi
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
@@ -276,16 +298,14 @@ Resources:
           LOG_LEVEL: !FindInMap [EnvConfig, !Ref EnvironmentName, LogLevel]
           FROM_EMAIL: !FindInMap [EnvConfig, !Ref EnvironmentName, SenderEmail]
           # S3 Buckets 
-          
           S3_APPLICATION_BUCKET: !Ref ApplicationBucket
-
       Events:
         WelcomeEmailApi:
           Type: Api
           Properties:
             Path: /welcome-email
             Method: POST
-            RestApiId: !Ref ServerlessRestApi
+            RestApiId: !Ref MyAppApi
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
@@ -312,19 +332,15 @@ Resources:
         Variables:
           ENV: !Ref EnvironmentName
           LOG_LEVEL: !FindInMap [EnvConfig, !Ref EnvironmentName, LogLevel]
-          
           # MongoDB
           MONGODB_SECRET_ID: !Sub "myapp/${EnvironmentName}/mongodb"
-          
           # Cognito
           COGNITO_CLIENT_ID_PATH: !Sub "/myapp/${EnvironmentName}/auth/clientId"
           COGNITO_CLIENT_SECRET_PATH: !Sub "/myapp/${EnvironmentName}/auth/clientSecret"
           COGNITO_USER_POOL_ID: !Ref MyAppUserPool
-          
           # SES
           FROM_EMAIL: !FindInMap [EnvConfig, !Ref EnvironmentName, SenderEmail]
           # S3 Buckets
-          
           S3_APPLICATION_BUCKET: !Ref ApplicationBucket
       Events:
         RegisterApi:
@@ -332,7 +348,91 @@ Resources:
           Properties:
             Path: /register
             Method: POST
-            RestApiId: !Ref ServerlessRestApi
+            RestApiId: !Ref MyAppApi
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: false
+        Target: es2020
+        Sourcemap: true
+        EntryPoints:
+          - index.ts
+        External:
+          - shared
+
+  #------------------------
+  SNSSubscriberFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt MyAppLambdaRole.Arn  
+      FunctionName: !Sub "${ProjectName}-sns-subscriber-${EnvironmentName}"
+      CodeUri: src/functions/sns-subscriber/
+      Handler: index.handler
+      Runtime: nodejs20.x
+      Timeout: 30
+      AutoPublishAlias: live
+      Environment:
+        Variables:
+          ENV: !Ref EnvironmentName
+          LOG_LEVEL: !FindInMap [EnvConfig, !Ref EnvironmentName, LogLevel]
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: false
+        Target: es2020
+        Sourcemap: true
+        EntryPoints:
+          - index.ts
+        External:
+          - shared
+
+  #-----------------------
+  SQSConsumerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt MyAppLambdaRole.Arn
+      FunctionName: !Sub "${ProjectName}-sqs-consumer-${EnvironmentName}"
+      CodeUri: src/functions/sqs-consumers/
+      Handler: index.handler
+      Runtime: nodejs20.x
+      Timeout: 30
+      Environment:
+        Variables:
+          ENV: !Ref EnvironmentName
+          LOG_LEVEL: !FindInMap [EnvConfig, !Ref EnvironmentName, LogLevel]
+      # No API event — triggered by SQS only
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: false
+        Target: es2020
+        Sourcemap: true
+        EntryPoints:
+          - index.ts
+        External:
+          - shared
+  #--------------------
+  EventBusPublisherFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt MyAppLambdaRole.Arn
+      FunctionName: !Sub "${ProjectName}-event-bus-publisher-${EnvironmentName}"
+      CodeUri: src/functions/event-bus-publisher/
+      Handler: index.handler
+      Runtime: nodejs20.x
+      Timeout: 10
+      Environment:
+        Variables:
+          ENV: !Ref EnvironmentName
+          LOG_LEVEL: !FindInMap [EnvConfig, !Ref EnvironmentName, LogLevel]
+          EVENT_BUS_NAME: !Ref AppEventBus
+      Events:
+        PublishTestEventApi:
+          Type: Api
+          Properties:
+            Path: /publish-test-event
+            Method: POST
+            RestApiId: !Ref MyAppApi
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
@@ -401,15 +501,6 @@ Resources:
   # ===================================
   # API Gateway Configuration
   # ===================================
-  MyCognitoAuthorizer:
-    Type: AWS::ApiGateway::Authorizer
-    Properties:
-      Name: !Sub "${ProjectName}-CognitoAuth-${EnvironmentName}"
-      RestApiId: !Ref ServerlessRestApi
-      Type: COGNITO_USER_POOLS
-      ProviderARNs:
-        - !GetAtt MyAppUserPool.Arn
-      IdentitySource: method.request.header.Authorization
 
   ApiGatewayLogGroup:
     Type: AWS::Logs::LogGroup
@@ -417,18 +508,15 @@ Resources:
       LogGroupName: !Sub "/aws/api-gateway/${ProjectName}-${EnvironmentName}-access-logs"
       RetentionInDays: 14
 
-  ServerlessRestApi:
+  MyAppApi:
     Type: AWS::Serverless::Api
     Properties:
       StageName: !Ref EnvironmentName
-      Cors: 
-        AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'" 
-        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,X-Amz-User-Agent'"
-        AllowOrigin: !Ref CorsOrigin
+      Cors:
+        AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+        AllowOrigin: "'*'"
       TracingEnabled: true
-      AccessLogSetting:
-        DestinationArn: !GetAtt ApiGatewayLogGroup.Arn
-        Format: '{ "requestId":"$context.requestId", "ip": "$context.identity.sourceIp", "caller":"$context.identity.caller", "user":"$context.identity.user","requestTime":"$context.requestTime", "httpMethod":"$context.httpMethod","resourcePath":"$context.resourcePath", "status":"$context.status","protocol":"$context.protocol", "responseLength":"$context.responseLength" }'
       MethodSettings:
         - ResourcePath: "/*"
           HttpMethod: "*"
@@ -436,98 +524,319 @@ Resources:
           MetricsEnabled: true
           ThrottlingBurstLimit: !FindInMap [EnvConfig, !Ref EnvironmentName, BurstLimit]
           ThrottlingRateLimit: !FindInMap [EnvConfig, !Ref EnvironmentName, RateLimit]
-      DefinitionBody:
-        openapi: "3.0.1"
-        info: 
-          title: !Sub "${ProjectName}-api-${EnvironmentName}"
-          version: "1.0"
-        components: 
-          schemas: 
-            RegisterRequest:
-              type: object
-              required: 
-                - email
-                - password
-                - given_name
-                - family_name
-              properties: 
-                email: 
-                  type: string
-                  format: email
-                password: 
-                  type: string
-                  minLength: 8
-                given_name:
-                  type: string
-                family_name:
-                  type: string
-     
-            WelcomeEmailRequest:  
-              type: object
-              required: 
-                - to
-                - name
-              properties:
-                to:
-                  type: string
-                  format: email
-                name: 
-                  type: string
-        paths:
-          /ping:
-            get: 
-              x-amazon-apigateway-integration: 
-                httpMethod: POST
-                type: aws_proxy
-                uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${PingFunction.Arn}/invocations"
-              responses: 
-                '200':
-                  description: Success
-              security: [] 
-          /register:
-            post:
-              requestBody:
-                required: true
-                content: 
-                  application/json:
-                    schema:
-                      $ref: "#/components/schemas/RegisterRequest"
-              x-amazon-apigateway-integration:
-                httpMethod: POST
-                type: aws_proxy
-                uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AuthFunction.Arn}/invocations"
-              responses:
-                '200':
-                  description: Success
-              security: []
+      #       DefinitionBody:
+      #         openapi: "3.0.1"
+      #         info: 
+      #           title: !Sub "${ProjectName}-api-${EnvironmentName}"
+      #           version: "1.0"
+      #         components: 
+      #           schemas: 
+      #             RegisterRequest:
+      #               type: object
+      #               required: 
+      #                 - email
+      #                 - password
+      #                 - given_name
+      #                 - family_name
+      #               properties: 
+      #                 email: 
+      #                   type: string
+      #                   format: email
+      #                 password: 
+      #                   type: string
+      #                   minLength: 8
+      #                 given_name:
+      #                   type: string
+      #                 family_name:
+      #                   type: string
+      #      
+      #             WelcomeEmailRequest:  
+      #               type: object
+      #               required: 
+      #                 - to
+      #                 - name
+      #               properties:
+      #                 to:
+      #                   type: string
+      #                   format: email
+      #                 name: 
+      #                   type: string
+      #         paths:
+      #           /ping:
+      #             get: 
+      #               x-amazon-apigateway-integration: 
+      #                 httpMethod: POST
+      #                 type: aws_proxy
+      #                 uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${PingFunction.Arn}/invocations"
+      #               responses: 
+      #                 '200':
+      #                   description: Success
+      #               security: [] 
+      #           /register:
+      #             post:
+      #               requestBody:
+      #                 required: true
+      #                 content: 
+      #                   application/json:
+      #                     schema:
+      #                       $ref: "#/components/schemas/RegisterRequest"
+      #               x-amazon-apigateway-integration:
+      #                 httpMethod: POST
+      #                 type: aws_proxy
+      #                 uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AuthFunction.Arn}/invocations"
+      #               responses:
+      #                 '200':
+      #                   description: Success
+      #               security: []
+      # 
+      #           /welcome-email: 
+      #             post:
+      #               requestBody:
+      #                 required: true
+      #                 content: 
+      #                   application/json:
+      #                     schema:
+      #                       $ref: "#/components/schemas/WelcomeEmailRequest"
+      #               x-amazon-apigateway-integration:
+      #                 httpMethod: POST
+      #                 type: aws_proxy
+      #                 uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WelcomeEmailFunction.Arn}/invocations"
+      #               responses:
+      #                 '200':
+      #                   description: Success
+      #               security: []
+      #         x-amazon-apigateway-gateway-responses:
+      #           DEFAULT_4XX:
+      #             statusCode: 400
+      #             responseTemplates:
+      #               application/json: '{"error": "Invalid request", "message": "$context.error.message"}'
+      #           DEFAULT_5XX:
+      #             statusCode: 500
+      #             responseTemplates:
+      #               application/json: '{"error": "Internal server error", "message": "$context.error.message"}'
+ 
+  # ==============
+  # KMS Resource 
+  # ==============
+  SNSEncryptionKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: !Sub "CMK for encrypting SNS messages in ${ProjectName} (${EnvironmentName})"
+      Enabled: true
+      EnableKeyRotation: true
+      PendingWindowInDays: 30
+      KeyPolicy: 
+        Version: "2012-10-17"
+        Statement:
+          - Sid: Enable IAM User Permissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action: "kms:*"
+            Resource: "*"
+          - Sid: Allow SNS to use the key
+            Effect: Allow
+            Principal:
+              Service: sns.amazonaws.com
+            Action:
+              - "kms:Decrypt"
+              - "kms:GenerateDataKey"
+            Resource: "*"
+  
+  SNSEncryptionKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub "alias/${ProjectName}-${EnvironmentName}-sns-key"
+      TargetKeyId: !Ref SNSEncryptionKey
+  
+  # ==============
+  # SNS Topic
+  # ==============
+  AppEventsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${ProjectName}-${EnvironmentName}-events"
+      KmsMasterKeyId: !Ref SNSEncryptionKey
+  
+  SNSPublishPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${ProjectName}-${EnvironmentName}-SNSPublishPolicy"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - "sns:Publish"
+            Resource: !Ref AppEventsTopic
 
-          /welcome-email: 
-            post:
-              requestBody:
-                required: true
-                content: 
-                  application/json:
-                    schema:
-                      $ref: "#/components/schemas/WelcomeEmailRequest"
-              x-amazon-apigateway-integration:
-                httpMethod: POST
-                type: aws_proxy
-                uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WelcomeEmailFunction.Arn}/invocations"
-              responses:
-                '200':
-                  description: Success
-              security: []
-        x-amazon-apigateway-gateway-responses:
-          DEFAULT_4XX:
-            statusCode: 400
-            responseTemplates:
-              application/json: '{"error": "Invalid request", "message": "$context.error.message"}'
-          DEFAULT_5XX:
-            statusCode: 500
-            responseTemplates:
-              application/json: '{"error": "Internal server error", "message": "$context.error.message"}'
+  # ==============
+  # SNS Subscriptions
+  # ==============
+  LambdaSNSSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: lambda
+      Endpoint: !GetAtt SNSSubscriberFunction.Arn
+      TopicArn: !Ref AppEventsTopic
+
+  SNSSubscriberPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SNSSubscriberFunction
+      Action: lambda:InvokeFunction
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref AppEventsTopic
 
 
+  SQSSNSSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: sqs
+      Endpoint: !GetAtt AppEventsQueue.Arn
+      TopicArn: !Ref AppEventsTopic
+      RawMessageDelivery: true
+      DeliveryPolicy:
+        healthyRetryPolicy:
+          minDelayTarget: 1
+          maxDelayTarget: 30
+          numRetries: 3
+          numNoDelayRetries: 0
+          backoffFunction: "exponential"
+
+  # ==============
+  # SQS Subscriber + DLQ
+  # ==============
+  AppEventsDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${ProjectName}-${EnvironmentName}-events-dlq"
+
+  AppEventsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${ProjectName}-${EnvironmentName}-events-queue"
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt AppEventsDLQ.Arn
+        maxReceiveCount: 3
+
+  AppEventsQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref AppEventsQueue
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: sns.amazonaws.com
+            Action: SQS:SendMessage
+            Resource: !GetAtt AppEventsQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Ref AppEventsTopic
+
+  # ===================================
+  # Async Processing Queue (Standard)
+  # ===================================
+  ProcessingDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${ProjectName}-${EnvironmentName}-processing-dlq"
+
+  ProcessingQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${ProjectName}-${EnvironmentName}-processing"
+      VisibilityTimeout: 30
+      ReceiveMessageWaitTimeSeconds: 20
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt ProcessingDLQ.Arn
+        maxReceiveCount: 3
+
+  # ===================================
+  # Ordered Workflow Queue (FIFO)
+  # ===================================
+  WorkflowDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${ProjectName}-${EnvironmentName}-workflow-dlq.fifo"
+      FifoQueue: true
+
+  WorkflowQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${ProjectName}-${EnvironmentName}-workflow.fifo"
+      FifoQueue: true
+      ContentBasedDeduplication: true
+      VisibilityTimeout: 60
+      ReceiveMessageWaitTimeSeconds: 20
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt WorkflowDLQ.Arn
+        maxReceiveCount: 5
+
+  ProcessingQueueEventSource:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      BatchSize: 10
+      MaximumBatchingWindowInSeconds: 10
+      Enabled: true
+      EventSourceArn: !GetAtt ProcessingQueue.Arn
+      FunctionName: !GetAtt SQSConsumerFunction.Arn
+
+  WorkflowQueueEventSource:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      BatchSize: 1  # FIFO requires BatchSize=1 for ordering
+      Enabled: true
+      EventSourceArn: !GetAtt WorkflowQueue.Arn
+      FunctionName: !GetAtt SQSConsumerFunction.Arn
+
+  # ===================================
+  # CloudWatch Alarms for Queue Backlogs
+  # ===================================
+  ProcessingQueueBacklogAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-${EnvironmentName}-ProcessingQueue-Backlog"
+      AlarmDescription: "Alarm when ProcessingQueue has too many visible messages"
+      MetricName: ApproximateNumberOfMessagesVisible
+      Namespace: AWS/SQS
+      Statistic: Maximum
+      Period: 300  # 5 minutes
+      EvaluationPeriods: 1
+      Threshold: 100
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt ProcessingQueue.QueueName
+      TreatMissingData: notBreaching
+
+  WorkflowQueueBacklogAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-${EnvironmentName}-WorkflowQueue-Backlog"
+      AlarmDescription: "Alarm when WorkflowQueue has too many visible messages"
+      MetricName: ApproximateNumberOfMessagesVisible
+      Namespace: AWS/SQS
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 50  # lower for FIFO (ordered workflows are more time-sensitive)
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt WorkflowQueue.QueueName
+      TreatMissingData: notBreaching
+
+  # ===================================
+  # Event Bridge
+  # ===================================
+  AppEventBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: !Sub "${ProjectName}-${EnvironmentName}-bus"
 Outputs:
   # Layer ARNs
   CommonDependenciesLayerArn:
@@ -563,7 +872,7 @@ Outputs:
 
   PingApiUrl:
     Description: "API Gateway endpoint URL for ping function"
-    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/${EnvironmentName}/ping"
+    Value: !Sub "https://${MyAppApi}.execute-api.${AWS::Region}.amazonaws.com/${EnvironmentName}/ping"
     Export:
       Name: !Sub "${AWS::StackName}-PingUrl"
 
