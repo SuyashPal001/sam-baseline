@@ -1,0 +1,11 @@
+Building layer 'CommonDependenciesLayer'
+CommonDependenciesLayer: Running CustomMakeBuilder:CopySource
+CommonDependenciesLayer: Running CustomMakeBuilder:MakeBuild
+CommonDependenciesLayer: Current Artifacts Directory : /mnt/data/aws-sam-baseline/.aws-sam/build/CommonDependenciesLayer
+mkdir -p "/mnt/data/aws-sam-baseline/.aws-sam/build/CommonDependenciesLayer/nodejs"
+cp -r node_modules "/mnt/data/aws-sam-baseline/.aws-sam/build/CommonDependenciesLayer/nodejs/"
+cp package.json "/mnt/data/aws-sam-baseline/.aws-sam/build/CommonDependenciesLayer/nodejs/"
+
+Build Failed
+Error: CustomMakeBuilder:MakeBuild - Make Failed: cp: cannot stat 'package.json': No such file or directory
+make: *** [/mnt/data/aws-sam-baseline/layers/common/Makefile:4: build-CommonDependenciesLayer] Error 1

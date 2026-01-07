@@ -1,0 +1,5 @@
+.git/
+.aws-sam/
+tests/
+*.md
+.github/

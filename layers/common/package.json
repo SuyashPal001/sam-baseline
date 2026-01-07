@@ -1,0 +1,14 @@
+{
+  "name": "common-dependencies-layer",
+  "version": "1.0.0",
+  "description": "Common npm dependencies for Lambda functions",
+  "dependencies": {
+    "@aws-sdk/client-cognito-identity-provider": "^3.0.0",
+    "@aws-sdk/client-eventbridge": "^3.940.0",
+    "@aws-sdk/client-secrets-manager": "^3.0.0",
+    "@aws-sdk/client-sns": "^3.940.0",
+    "@aws-sdk/client-ssm": "^3.0.0",
+    "mongoose": "^8.0.0",
+    "uuid": "^10.0.0"
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "name": "aws-sam-typescript-baseline",
+  "version": "1.0.0",
+  "description": "TypeScript AWS SAM baseline with modular Lambda functions",
+  "keywords": [
+    "aws",
+    "sam",
+    "serverless",
+    "lambda",
+    "typescript"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=9.0.0"
+  },
+  "scripts": {
+    "prebuild": "npm run clean",
+    "build": "npm run build:shared && npm run build:functions",
+    "build:shared": "bash build-shared.sh",
+    "build:functions": "sam build",
+    "clean": "rm -rf dist/ .aws-sam/",
+    "start": "bash start-local.sh 3000",
+    "dev": "bash start-local.sh 3000",
+    "invoke:ping": "sam local invoke PingFunction --env-vars env.json -e events/ping-event.json",
+    "invoke:auth": "sam local invoke AuthFunction --env-vars env.json -e events/register.json",
+    "invoke:email": "sam local invoke WelcomeEmailFunction --env-vars env.json -e events/welcome-email.json",
+    "deploy": "sam deploy --config-file samconfig.dev.toml",
+    "deploy:dev": "sam deploy --config-file samconfig.dev.toml",
+    "deploy:staging": "sam deploy --config-file samconfig.staging.toml --guided",
+    "deploy:prod": "sam deploy --config-file samconfig.prod.toml --guided",
+    "validate": "sam validate",
+    "logs": "sam logs --stack-name myapp-dev --tail",
+    "lint": "eslint 'src/**/*.ts'",
+    "lint:fix": "eslint 'src/**/*.ts' --fix",
+    "type-check": "tsc --noEmit",
+    "test": "echo 'Add tests here' && exit 0"
+  },
+  "devDependencies": {
+    "@aws-sdk/client-eventbridge": "^3.940.0",
+    "@aws-sdk/client-secrets-manager": "^3.940.0",
+    "@aws-sdk/client-sns": "^3.940.0",
+    "@aws-sdk/client-ssm": "^3.940.0",
+    "@types/aws-lambda": "^8.10.0",
+    "@types/node": "^20.0.0",
+    "@typescript-eslint/eslint-plugin": "^6.21.0",
+    "@typescript-eslint/parser": "^6.21.0",
+    "eslint": "^8.57.1",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "@aws-sdk/client-cognito-identity-provider": "^3.932.0",
+    "@aws-sdk/client-ses": "^3.932.0",
+    "mongoose": "^8.0.0",
+    "uuid": "^13.0.0"
+  }
+}
